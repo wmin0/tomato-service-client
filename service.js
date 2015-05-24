@@ -16,6 +16,7 @@ define([
     this.isDestroy = false;
     // TODO: associate to Service for update it
     this.instance = {};
+    this.observeHandlers = {};
     this.reconfigInstance();
     Object.defineProperty(this.instance, '_id', {
       configurable: false,
@@ -64,7 +65,6 @@ define([
         set: Service.createSyncSetter(key)
       });
     }, this);
-
   };
 
   Service.prototype.serviceCall = function(args, callback) {
@@ -86,6 +86,29 @@ define([
     }
     this.client._sync[args.key] = args.data;
   };
+
+  Service.prototype.observe = function(func, acceptList) {
+    if (this.observeHandlers(func)) {
+      return;
+    }
+    var handler = function(changes) {
+      changes = changes.map(function(change) {
+        change.object = this.instance;
+      }, this);
+      func.call(this.instance, changes);
+    }.bind(this);
+    this.observeHandlers[func] = handler;
+    this._sync.observe(handler, acceptList);
+  }
+
+  Service.prototype.unobserve = function(func) {
+    if (!this.observeHandlers(func)) {
+      return;
+    }
+    var handler = this.observeHandlers[func];
+    this._sync.unobserve(handler);
+    delete this.observeHandlers[func];
+  }
 
   Service.instance = {};
   Service.getService = function(args) {
@@ -175,6 +198,7 @@ define([
           callback.call(this, resp);
         }
       }.bind(this));
+      return data;
     };
   };
 
@@ -191,8 +215,15 @@ define([
       id: service.id
     });
     service.isDestroy = true;
+    Object.keys(service.observeHandlers).forEach(function(func) {
+      service.unobserve(func);
+    });
     Service.instance[service.id] = undefined;
   };
+
+  Service.setWithCallback = function(service, name, data, callback) {
+    Object.getOwnPropertyDescriptor(service, name).set.call(service, data, callback);
+  }
 
   socket.on('service:request', function(args, callback) {
     console.info('service:request', args);
