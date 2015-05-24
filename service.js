@@ -7,6 +7,43 @@ define([
   "use strict";
   var socket = Socket.connect(location.origin);
 
+  var FunctionMap = function() {
+    this.keyArray = [];
+    this.valueArray = [];
+  };
+  FunctionMap.prototype.get = function(key) {
+    for (var i = 0; i < this.keyArray.length; ++i) {
+      if (key === this.keyArray[i]) {
+        return key;
+      }
+    }
+  };
+  FunctionMap.prototype.set = function(key, value) {
+    for (var i = 0; i < this.keyArray.length; ++i) {
+      if (key === this.keyArray[i]) {
+        this.valueArray[i] = value;
+        return;
+      }
+    }
+    this.keyArray.push(key);
+    this.valueArray.push(value);
+  };
+  FunctionMap.prototype.remove = function(key) {
+    for (var i = 0; i < this.keyArray.length; ++i) {
+      if (key === this.keyArray[i]) {
+        this.keyArray = this.keyArray.slice(0, i).concat(this.keyArray.slice(i + 1));
+        this.valueArray = this.valueArray.slice(0, i).concat(this.valueArray.slice(i + 1));
+        return;
+      }
+    }
+  };
+  FunctionMap.keys = function(map) {
+    return map.keyArray;
+  };
+  FunctionMap.values = function(map) {
+    return map.valueArray;
+  }
+
   var Service = function(args) {
     this.name = args.name;
     this.type = args.type;
@@ -16,7 +53,7 @@ define([
     this.isDestroy = false;
     // TODO: associate to Service for update it
     this.instance = {};
-    this.observeHandlers = {};
+    this.observeHandlers = new FunctionMap();
     this.reconfigInstance();
     Object.defineProperty(this.instance, '_id', {
       configurable: false,
@@ -28,7 +65,19 @@ define([
       configurable: false,
       enumerable: false,
       writable: false,
-      value: Service.destroyService
+      value: Service.destroy
+    });
+    Object.defineProperty(this.instance, 'observe', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: Service.observe
+    });
+    Object.defineProperty(this.instance, 'unobserve', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: Service.unobserve
     });
   };
 
@@ -86,29 +135,6 @@ define([
     }
     this.client._sync[args.key] = args.data;
   };
-
-  Service.prototype.observe = function(func, acceptList) {
-    if (this.observeHandlers(func)) {
-      return;
-    }
-    var handler = function(changes) {
-      changes = changes.map(function(change) {
-        change.object = this.instance;
-      }, this);
-      func.call(this.instance, changes);
-    }.bind(this);
-    this.observeHandlers[func] = handler;
-    this._sync.observe(handler, acceptList);
-  }
-
-  Service.prototype.unobserve = function(func) {
-    if (!this.observeHandlers(func)) {
-      return;
-    }
-    var handler = this.observeHandlers[func];
-    this._sync.unobserve(handler);
-    delete this.observeHandlers[func];
-  }
 
   Service.instance = {};
   Service.getService = function(args) {
@@ -202,7 +228,7 @@ define([
     };
   };
 
-  Service.destroyService = function() {
+  Service.destroy = function() {
     var service = Service.getService({
       id: this._id
     });
@@ -215,14 +241,57 @@ define([
       id: service.id
     });
     service.isDestroy = true;
-    Object.keys(service.observeHandlers).forEach(function(func) {
-      service.unobserve(func);
+    FunctionMap.values(service.observeHandlers).forEach(function(func) {
+      Object.unobserve(service.client._sync, func);
     });
     Service.instance[service.id] = undefined;
   };
 
-  Service.setWithCallback = function(service, name, data, callback) {
-    Object.getOwnPropertyDescriptor(service, name).set.call(service, data, callback);
+  Service.observe = function(func, acceptList) {
+    var service = Service.getService({
+      id: this._id
+    });
+    if (!service) {
+      return;
+    }
+    if (service.observeHandlers.get(func)) {
+      return;
+    }
+    var handler = function(changes) {
+      changes = changes.map(function(change) {
+        var obj = {};
+        Object.getOwnPropertyNames(change).forEach(function(name) {
+          var descriptor = Object.getOwnPropertyDescriptor(change, name);
+          if (name === 'object') {
+            descriptor.value = this;
+          }
+          Object.defineProperty(obj, name, descriptor);
+        }, this);
+        return obj;
+      }, this);
+      func.call(this, changes);
+    }.bind(this);
+    service.observeHandlers.set(func, handler);
+    Object.observe(service.client._sync, handler, acceptList);
+  }
+
+  Service.unobserve = function(func) {
+    var service = Service.getService({
+      id: this._id
+    });
+    if (!service) {
+      return;
+    }
+    if (!service.observeHandlers.get(func)) {
+      return;
+    }
+    var handler = service.observeHandlers.get(func);
+    Object.unobserve(service.client._sync, handler);
+    service.observeHandlers.remove(func);
+  }
+
+  Service.setWithCallback = function(instance, name, data, callback) {
+    Object.getOwnPropertyDescriptor(instance, name).set.call(instance, data, callback);
   }
 
   socket.on('service:request', function(args, callback) {
@@ -277,7 +346,8 @@ define([
   };
 
   return {
-    connectService: Service.connectService
+    connectService: Service.connectService,
+    setWithCallback: Service.setWithCallback
   };
 });
 
